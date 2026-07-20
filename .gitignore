@@ -1,0 +1,7 @@
+.env
+.venv
+mynotes.md
+__pycache__/
+*.pyc
+cron.log
+.claude/

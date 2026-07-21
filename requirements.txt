@@ -6,3 +6,4 @@ psycopg-binary==3.3.4
 python-dotenv==1.2.2
 requests==2.34.2
 urllib3==2.7.0
+streamlit==1.59.2

@@ -1,5 +1,5 @@
 from kroger_client import getToken, getProduct, getAllProductsForList
-from db import insert_watchlist, insert_snapshot_list, insert_basket_snapshot
+from db import insert_watchlist, insert_snapshot_list, insert_basket_snapshot, refresh_summary
 from transform import transform_product_data, getTotalPrice
 from validate import validateProducts
 import sys
@@ -47,6 +47,9 @@ def main():
 
     # Per-item history is always worth keeping (flag-don't-drop).
     insert_snapshot_list(valid_products, LOCATION_ID)
+
+    #refresh materialized summary view for basket snapshot
+    refresh_summary()
 
     # A basket index entry is only comparable if it sums the SAME full set of
     # items every run. Only write one when every watchlist item priced cleanly;

@@ -6,7 +6,7 @@ def transform_product_data(product):
         price_info = item.get("price_info", {})
         if price_info is None:  
             print(f"No price information available for UPC {upc}. Skipping.")
-            error += "No price information available."
+            error = "No price information available."
             regular_price = 0.0
             unit_price = 0.0
             sale_price = 0.0

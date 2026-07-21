@@ -1,16 +1,33 @@
 import os, requests
 from dotenv import load_dotenv
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 load_dotenv()
 
 CLIENT_ID = os.getenv("KROGER_CLIENT_ID")
 CLIENT_SECRET = os.getenv("KROGER_CLIENT_SECRET")
 
-def getToken():
+def _session():
+    retry = Retry(
+        total=2,
+        backoff_factor=0.5,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["GET", "POST"],
+        respect_retry_after_header=True,
+    )
+    s = requests.Session()
+    adapter = HTTPAdapter(max_retries=retry)
+    s.mount("https://", adapter)
+    return s
+
+def getToken(session=None):
     if not CLIENT_ID or not CLIENT_SECRET:
         raise ValueError("KROGER_CLIENT_ID and KROGER_CLIENT_SECRET must be set in the environment variables.")
-
-    tokenObject = requests.post("https://api.kroger.com/v1/connect/oauth2/token", data={"grant_type": "client_credentials", "scope": "product.compact"}, auth=(CLIENT_ID, CLIENT_SECRET), timeout=(5,30))
+    
+    session = session or _session()
+    
+    tokenObject = session.post("https://api.kroger.com/v1/connect/oauth2/token", data={"grant_type": "client_credentials", "scope": "product.compact"}, auth=(CLIENT_ID, CLIENT_SECRET), timeout=(5,30))
 
     tokenObject.raise_for_status()
 
@@ -18,8 +35,9 @@ def getToken():
 
     return token
 
-def getProduct(upc, location_id, token):
-    productObject = requests.get(f"https://api.kroger.com/v1/products/{upc}?filter.locationId={location_id}", headers={"Authorization": f"Bearer {token}"}, timeout=(5,30))
+def getProduct(upc, location_id, token, session=None):
+    session = session or _session()
+    productObject = session.get(f"https://api.kroger.com/v1/products/{upc}?filter.locationId={location_id}", headers={"Authorization": f"Bearer {token}"}, timeout=(5,30))
     error = None
     price_info = None
     productObject.raise_for_status()
@@ -45,10 +63,11 @@ def getProduct(upc, location_id, token):
     }
 
 def getAllProductsForList(upc_list, location_id, token):
+    session = _session()
     products = []
     for upc in upc_list:
         try:
-            product_data = getProduct(upc, location_id, token)
+            product_data = getProduct(upc, location_id, token, session=session)
             products.append(product_data)
         except requests.exceptions.RequestException as e:
             print(f"Error fetching product data for UPC {upc}: {e}")

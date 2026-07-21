@@ -5,3 +5,4 @@ __pycache__/
 *.pyc
 cron.log
 .claude/
+.streamlit/secrets.toml

@@ -64,3 +64,8 @@ def insert_basket_snapshot(location_id, total_price):
             )
             if (cur.rowcount > 0):
                 print("Basket snapshot inserted successfully.")
+
+def refresh_summary():
+    with psycopg.connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute("REFRESH MATERIALIZED VIEW daily_price_index")

@@ -63,6 +63,18 @@ History accumulates by running the snapshot on a timer. With system cron, add a 
 
 The hourly schedule fills the history; output is appended to `cron.log`. Idempotent upserts make overlapping or repeated runs safe.
 
+## Tests
+
+Unit tests cover the pure pipeline stages (transform, validate) with no DB or
+network — the validate tests monkeypatch the last-price lookup. Run them with:
+
+```bash
+pip install -r requirements-dev.txt
+pytest
+```
+
+CI (`.github/workflows/ci.yml`) runs the suite on every push and PR to `main`.
+
 ## Schema migrations
 
 `init.sql` only runs against an *empty* Docker volume, so schema changes after the DB exists must be applied by hand against the live database (see `migrate_recorded_at_timestamptz.sql` for an example).

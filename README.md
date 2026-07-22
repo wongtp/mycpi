@@ -1,5 +1,7 @@
 # mycpi — Personal CPI / Household Basket Price Tracker
 
+[![CI](https://github.com/wongtp/mycpi/actions/workflows/ci.yml/badge.svg)](https://github.com/wongtp/mycpi/actions/workflows/ci.yml)
+
 **Current:** A scheduled ETL pipeline that snapshots the current price of your recurring household basket from the Kroger API, accumulates a price history that doesn't exist anywhere else, and charts per-item trends plus a whole-basket inflation index.
 
 **End goal:** Personal CPI index with a UI designed to track personal household spending and costs including groceries, rent, gas, utilities, and more.

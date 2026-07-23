@@ -6,3 +6,4 @@ __pycache__/
 cron.log
 .claude/
 .streamlit/secrets.toml
+PHASE6.md

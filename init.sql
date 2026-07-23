@@ -35,3 +35,12 @@ SELECT
 FROM price_snapshots p
 JOIN watchlist w USING (upc)
 GROUP BY p.upc, w.product_name, date_trunc('day', p.recorded_at);
+
+CREATE TABLE bls_cpi (
+    series_id   VARCHAR(20),
+    year        INT,
+    month       INT,          -- 1..12, parsed from 'M01'
+    value       NUMERIC(10,3),
+    fetched_at  TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (series_id, year, month)
+);

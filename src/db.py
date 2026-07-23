@@ -69,3 +69,16 @@ def refresh_summary():
     with psycopg.connect() as conn:
         with conn.cursor() as cur:
             cur.execute("REFRESH MATERIALIZED VIEW daily_price_index")
+
+def upsert_cpi(rows):
+    with psycopg.connect() as conn:
+        with conn.cursor() as cur:
+            for r in rows:
+                cur.execute(
+                    """INSERT INTO bls_cpi (series_id, year, month, value)
+                       VALUES (%(series_id)s, %(year)s, %(month)s, %(value)s)
+                       ON CONFLICT (series_id, year, month)
+                       DO UPDATE SET value = EXCLUDED.value,
+                                     fetched_at = CURRENT_TIMESTAMP""",
+                    r,
+                )

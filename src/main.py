@@ -1,9 +1,11 @@
 from kroger_client import getToken, getProduct, getAllProductsForList
-from db import insert_watchlist, insert_snapshot_list, insert_basket_snapshot, refresh_summary
+from bls_client import fetch_series, parse_series
+from db import insert_watchlist, insert_snapshot_list, insert_basket_snapshot, refresh_summary, upsert_cpi
 from transform import transform_product_data, getTotalPrice
 from validate import validateProducts
 import sys
 import pathlib
+from datetime import datetime
 
 LOCATION_ID = "09700352"
 PRODUCT_LIST_PATH = pathlib.Path(__file__).resolve().parent.parent / "productList.txt"
@@ -27,6 +29,9 @@ def main():
             insert_watchlist(upc, item_name)
         else:
             insert_watchlist(upc, "Unknown Product Name")
+
+    #fetch bls data
+    sync_cpi()
 
     cleaned_data = transform_product_data(data)
     valid_products = validateProducts(cleaned_data)
@@ -66,6 +71,18 @@ def main():
     print(f"Skipping basket snapshot: {len(missing)}/{expected} items missing "
           f"or flagged (UPCs: {', '.join(missing)}). Per-item snapshots still saved.")
     return False
+
+def sync_cpi():
+    # Fetch CPI data from BLS API
+    series_id = "CUUR0000SAF11"  # Example series ID for All Items CPI
+    try:
+        end = datetime.now().year
+        payload = fetch_series(series_id, end-1, end)
+        rows = parse_series(payload)
+        upsert_cpi(rows)
+        print("CPI data synchronized successfully.")
+    except Exception as e:
+        print(f"Error occurred while synchronizing CPI data: {e}")
 
 if __name__ == "__main__":
     try:

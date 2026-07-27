@@ -4,6 +4,8 @@ import psycopg
 from dotenv import load_dotenv
 import altair as alt
 
+from transform import yoy
+
 load_dotenv()
 
 st.set_page_config(
@@ -17,6 +19,16 @@ REGULAR = "#2a78d6"
 SALE = "#eb6834"
 LABELS = {"avg_regular": "regular", "best_sale": "sale"}
 COLORS = {"regular": REGULAR, "sale": SALE}
+
+# National CPI is context, not a peer series — neutral gray keeps it out of the
+# categorical palette so it never reads as comparable to the basket lines.
+NATIONAL = "#6b6a66"
+AXIS = "#898781"
+
+# BLS "food at home", US city average — the closest national analogue to a
+# grocery basket. Monthly, and published with a lag of a month or two.
+CPI_SERIES = "CUUR0000SAF11"
+CPI_SERIES_LABEL = "US food-at-home CPI"
 
 
 # ---------------------------------------------------------------- data
@@ -49,6 +61,19 @@ def load_last_updated():
         row = conn.execute("SELECT max(recorded_at) FROM basket_snapshots").fetchone()
         return row[0]
 
+@st.cache_data(ttl=3600)
+def load_cpi(series_id=CPI_SERIES):
+    with psycopg.connect() as conn:
+        cur = conn.execute(
+            "SELECT make_date(year, month, 1) AS day, value::float8 AS value "
+            "FROM bls_cpi WHERE series_id = %s ORDER BY 1",
+            (series_id,),
+        )
+        cols = [c.name for c in cur.description]
+        frame = pd.DataFrame(cur.fetchall(), columns=cols)
+        frame["day"] = pd.to_datetime(frame["day"])
+        return frame
+
 
 # ---------------------------------------------------------------- charts
 def basket_chart(basket):
@@ -80,6 +105,29 @@ def basket_chart(basket):
         ]
     )
     return (area + points).properties(height=300)
+
+
+def cpi_chart(cpi):
+    """Standalone monthly BLS line — own axis, own scale, deliberately not
+    plotted against the basket (different frequency, no overlapping dates)."""
+    return (
+        alt.Chart(cpi)
+        .mark_line(color=NATIONAL, strokeWidth=2,
+                   point=alt.OverlayMarkDef(filled=True, size=25, color=NATIONAL))
+        .encode(
+            x=alt.X("day:T", title=None,
+                    axis=alt.Axis(format="%b '%y", tickCount=4, labelAngle=0,
+                                  labelColor=AXIS, domainColor=AXIS, tickColor=AXIS)),
+            y=alt.Y("value:Q", title=None, scale=alt.Scale(zero=False),
+                    axis=alt.Axis(format=".0f", labelColor=AXIS, domainColor=AXIS,
+                                  tickColor=AXIS, tickCount=3)),
+            tooltip=[
+                alt.Tooltip("day:T", title="Month", format="%b %Y"),
+                alt.Tooltip("value:Q", title="Index", format=".1f"),
+            ],
+        )
+        .properties(height=110)
+    )
 
 
 def mini_chart(series):
@@ -134,6 +182,7 @@ st.caption(
 
 basket = load_basket()
 df = load_index()
+cpi = load_cpi()
 
 # ---------------------------------------------------------------- KPI row
 if not basket.empty:
@@ -142,7 +191,7 @@ if not basket.empty:
     since_start = current - first
     prev = basket["basket_price"].iloc[-2] if len(basket) > 1 else None
 
-    k1, k2, k3, k4 = st.columns(4)
+    k1, k2, k3, k4, k5 = st.columns(5)
     k1.metric(
         "Basket now", f"${current:,.2f}",
         delta=(f"${current - prev:+,.2f} vs. prior day" if prev is not None else None),
@@ -155,6 +204,21 @@ if not basket.empty:
     )
     k3.metric("Items tracked", f"{df['product_name'].nunique()}")
     k4.metric("Days of history", f"{basket['day'].nunique()}")
+
+    cpi_latest, cpi_yoy = yoy(cpi, "value")
+    cpi_asof = cpi["day"].iloc[-1].strftime("%b %Y") if not cpi.empty else None
+    k5.metric(
+        CPI_SERIES_LABEL,
+        f"{cpi_latest:,.1f}" if cpi_latest is not None else "—",
+        delta=(f"{cpi_yoy:+.1f}% YoY" if cpi_yoy is not None else None),
+        delta_color="inverse",
+        help=(
+            f"BLS series {CPI_SERIES} — food at home, US city average. A national "
+            "reference point, not a like-for-like comparison to the basket: it is "
+            "monthly, covers a different set of goods, and lags."
+            + (f" Latest published: {cpi_asof}." if cpi_asof else " No data loaded yet.")
+        ),
+    )
 
 st.caption(f"Last updated {stamp}")
 st.divider()
@@ -217,6 +281,18 @@ with st.sidebar:
         "item prices cleanly, so it always compares like with like\n"
         "- **Sale line** is the best (lowest) promo price seen that day"
     )
+    st.divider()
+
+    st.subheader("National reference")
+    if cpi.empty:
+        st.caption("No BLS data loaded yet.")
+    else:
+        st.altair_chart(cpi_chart(cpi), width="stretch")
+        st.caption(
+            f"BLS {CPI_SERIES_LABEL.lower()} ({CPI_SERIES}), monthly index. Shown on "
+            "its own scale — it doesn't yet overlap the basket's date range, so the "
+            "two aren't plotted together."
+        )
     st.divider()
     st.caption(
         "Prices are point-in-time snapshots and may lag the store. "

@@ -4,19 +4,31 @@ import pandas as pd
 def transform_product_data(product):
     result = []
     for item in product:
-        error = None
         upc = item.get("upc")
-        price_info = item.get("price_info", {})
-        if price_info is None:  
+        # The extract stage already says *why* a product has no price (HTTP
+        # failure, not carried at this location). Keep that instead of
+        # flattening every cause into one generic message.
+        error = item.get("error")
+        price_info = item.get("price_info")
+
+        if price_info is None:
             print(f"No price information available for UPC {upc}. Skipping.")
-            error = "No price information available."
-            regular_price = 0.0
-            unit_price = 0.0
-            sale_price = 0.0
+            if error is None:
+                error = "No price information available."
+            # A price we could not read is unknown, not zero. Writing 0.0 here
+            # put free-looking rows in the history: they dragged the daily
+            # average down and, on the next run, made the last-price check read
+            # a normal price as a 100% crash.
+            regular_price = unit_price = sale_price = None
         else:
             regular_price = price_info.get("regular")
             unit_price = price_info.get("regularPerUnitEstimate")
             sale_price = price_info.get("promo")
+            # Kroger sends promo: 0 to mean "no promotion running", not "free".
+            # Stored as 0 it becomes the min() in the daily index and pins the
+            # sale line to the x-axis.
+            if not sale_price:
+                sale_price = None
 
         result.append({
             "upc": upc,

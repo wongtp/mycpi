@@ -4,11 +4,20 @@ from dotenv import load_dotenv
 load_dotenv()
 
 def insert_watchlist(upc, product_name):
+    """Upsert a watchlist entry, keeping the best name we've ever seen.
+
+    A failed fetch carries no description. Overwriting a name learned from a
+    successful run with a placeholder would relabel the item everywhere in the
+    dashboard, so the update coalesces on the incoming value.
+    """
     with psycopg.connect() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO watchlist (upc, product_name) VALUES (%s, %s) ON CONFLICT (upc) DO UPDATE SET product_name = EXCLUDED.product_name",
-                (upc, product_name)
+                "INSERT INTO watchlist (upc, product_name) "
+                "VALUES (%(upc)s, COALESCE(%(name)s, 'Unknown Product Name')) "
+                "ON CONFLICT (upc) DO UPDATE "
+                "SET product_name = COALESCE(%(name)s, watchlist.product_name)",
+                {"upc": upc, "name": product_name or None}
             )
             if (cur.rowcount > 0):
                 print("Watchlist entry inserted successfully.")
@@ -25,7 +34,10 @@ def insert_snapshot_list(products, location_id):
                 sale_price = product.get("sale_price")
                 error = product.get("error")
 
-                if regular_price is not None:
+                # A row is only history if it carries a real price. Flagged rows
+                # with a genuine price are still kept (the daily index filters
+                # them out); rows with no usable price are not.
+                if regular_price is not None and regular_price > 0:
                     cur.execute(
                         "INSERT INTO price_snapshots (upc, location_id, regular_price, unit_price, sale_price, error) VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (upc, location_id, recorded_at) DO NOTHING",
                         (upc, location_id, regular_price, unit_price, sale_price, error)
@@ -46,14 +58,42 @@ def get_price_history(upc):
     return rows
 
 def get_last_price(upc):
+    """Most recent trustworthy snapshot for one UPC (see get_last_prices)."""
     with psycopg.connect() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT recorded_at, regular_price, unit_price, sale_price FROM price_snapshots WHERE upc = %s ORDER BY recorded_at DESC LIMIT 1",
+                "SELECT recorded_at, regular_price, unit_price, sale_price "
+                "FROM price_snapshots "
+                "WHERE upc = %s AND error IS NULL AND regular_price > 0 "
+                "ORDER BY recorded_at DESC LIMIT 1",
                 (upc,)
             )
             rows = cur.fetchall()
     return rows
+
+def get_last_prices(upcs):
+    """Latest clean regular price per UPC, as {upc: price}.
+
+    One query for the whole basket instead of a connection per item.
+
+    Rows carrying an error are excluded on purpose: comparing today's price
+    against a failed run's snapshot flags a perfectly normal price as an
+    implausible swing, which then skips the basket snapshot for that hour and
+    leaves a hole in the index.
+    """
+    upcs = [upc for upc in upcs if upc]
+    if not upcs:
+        return {}
+    with psycopg.connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT DISTINCT ON (upc) upc, regular_price "
+                "FROM price_snapshots "
+                "WHERE upc = ANY(%s) AND error IS NULL AND regular_price > 0 "
+                "ORDER BY upc, recorded_at DESC",
+                (upcs,)
+            )
+            return {upc: price for upc, price in cur.fetchall()}
 
 def insert_basket_snapshot(location_id, total_price):
     with psycopg.connect() as conn:
@@ -66,19 +106,30 @@ def insert_basket_snapshot(location_id, total_price):
                 print("Basket snapshot inserted successfully.")
 
 def refresh_summary():
+    """Rebuild the daily index.
+
+    CONCURRENTLY keeps the dashboard readable while the refresh runs, but it
+    needs the unique index added in migrations/002. Fall back to a plain
+    refresh on databases that predate it.
+    """
     with psycopg.connect() as conn:
         with conn.cursor() as cur:
-            cur.execute("REFRESH MATERIALIZED VIEW daily_price_index")
+            try:
+                cur.execute("REFRESH MATERIALIZED VIEW CONCURRENTLY daily_price_index")
+            except psycopg.errors.ObjectNotInPrerequisiteState:
+                conn.rollback()
+                cur.execute("REFRESH MATERIALIZED VIEW daily_price_index")
 
 def upsert_cpi(rows):
+    if not rows:
+        return
     with psycopg.connect() as conn:
         with conn.cursor() as cur:
-            for r in rows:
-                cur.execute(
-                    """INSERT INTO bls_cpi (series_id, year, month, value)
-                       VALUES (%(series_id)s, %(year)s, %(month)s, %(value)s)
-                       ON CONFLICT (series_id, year, month)
-                       DO UPDATE SET value = EXCLUDED.value,
-                                     fetched_at = CURRENT_TIMESTAMP""",
-                    r,
-                )
+            cur.executemany(
+                """INSERT INTO bls_cpi (series_id, year, month, value)
+                   VALUES (%(series_id)s, %(year)s, %(month)s, %(value)s)
+                   ON CONFLICT (series_id, year, month)
+                   DO UPDATE SET value = EXCLUDED.value,
+                                 fetched_at = CURRENT_TIMESTAMP""",
+                rows,
+            )

@@ -24,14 +24,16 @@ def _session():
 def getToken(session=None):
     if not CLIENT_ID or not CLIENT_SECRET:
         raise ValueError("KROGER_CLIENT_ID and KROGER_CLIENT_SECRET must be set in the environment variables.")
-    
+
     session = session or _session()
-    
+
     tokenObject = session.post("https://api.kroger.com/v1/connect/oauth2/token", data={"grant_type": "client_credentials", "scope": "product.compact"}, auth=(CLIENT_ID, CLIENT_SECRET), timeout=(5,30))
 
     tokenObject.raise_for_status()
 
-    token = tokenObject.json()["access_token"]
+    token = tokenObject.json().get("access_token")
+    if not token:
+        raise RuntimeError("Kroger token response contained no access_token.")
 
     return token
 
@@ -43,8 +45,10 @@ def getProduct(upc, location_id, token, session=None):
     productObject.raise_for_status()
     product = productObject.json()
 
-    data = product.get("data", {})
-    items = data.get("items", [])
+    # A malformed or empty response should read as "no price", not crash the run
+    # for the other items in the basket.
+    data = product.get("data") or {}
+    items = data.get("items") or []
 
     if not items:
         print("No items found for the given UPC and location.")
@@ -59,7 +63,7 @@ def getProduct(upc, location_id, token, session=None):
         "description": data.get("description"),
         "price_info": price_info,
         "upc": upc,
-        "error": error                                                                                         
+        "error": error
     }
 
 def getAllProductsForList(upc_list, location_id, token):
@@ -71,10 +75,14 @@ def getAllProductsForList(upc_list, location_id, token):
             products.append(product_data)
         except requests.exceptions.RequestException as e:
             print(f"Error fetching product data for UPC {upc}: {e}")
+            # Keep the status code: a 401 (token) and a 404 (delisted item) call
+            # for very different fixes, and the log is the only record.
+            status = getattr(e.response, "status_code", None)
+            detail = f"HTTP {status}" if status else type(e).__name__
             products.append({
                 "description": None,
                 "price_info": None,
                 "upc": upc,
-                "error": f"Request failed: {e}",   # or the HTTP status
+                "error": f"Request failed ({detail}): {e}",
             })
     return products

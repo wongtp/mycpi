@@ -1,34 +1,50 @@
-from kroger_client import getToken, getProduct, getAllProductsForList
+from kroger_client import getToken, getAllProductsForList
 from bls_client import fetch_series, parse_series
 from db import insert_watchlist, insert_snapshot_list, insert_basket_snapshot, refresh_summary, upsert_cpi
 from transform import transform_product_data, getTotalPrice
 from validate import validateProducts
+from config import LOCATION_ID, PRODUCT_LIST_PATH, CPI_SERIES
 import sys
-import pathlib
 from datetime import datetime
 
-LOCATION_ID = "09700352"
-PRODUCT_LIST_PATH = pathlib.Path(__file__).resolve().parent.parent / "productList.txt"
+def load_upc_list():
+    """Watchlist UPCs, de-duplicated but kept in file order.
+
+    The basket total sums one entry per line, so a UPC listed twice would both
+    double-count that item and inflate the expected-item count the
+    completeness check compares against.
+    """
+    try:
+        text = PRODUCT_LIST_PATH.read_text()
+    except OSError as e:
+        print(f"Could not read the product list at {PRODUCT_LIST_PATH}: {e}")
+        return []
+
+    seen = {}
+    for line in text.splitlines():
+        upc = line.strip()
+        if upc:
+            seen[upc] = None
+    return list(seen)
 
 def main():
+    upc_list = load_upc_list()
+    if not upc_list:
+        print("No UPCs to price — check productList.txt.")
+        return False
+
     try:
         token = getToken()
     except Exception as e:
         print(f"Error occurred while fetching token: {e}")
         return False
 
-    with open(PRODUCT_LIST_PATH, "r") as f:
-        upc_list = [line.strip() for line in f.readlines() if line.strip()]
-
     data = getAllProductsForList(upc_list, LOCATION_ID, token)
 
     for product in data:
-        upc = product.get("upc")
-        item_name = product.get("description")
-        if item_name:
-            insert_watchlist(upc, item_name)
-        else:
-            insert_watchlist(upc, "Unknown Product Name")
+        # A failed fetch has no description; passing it through as None lets the
+        # upsert keep whatever name a previous successful run recorded.
+        insert_watchlist(product.get("upc"), product.get("description"))
 
     #fetch bls data
     sync_cpi()
@@ -60,7 +76,7 @@ def main():
     # items every run. Only write one when every watchlist item priced cleanly;
     # otherwise skip it (a partial sum would look like deflation) and fail the run.
     expected = len(upc_list)
-    priced = {p["upc"] for p in valid_products if not p.get("error")}
+    priced = {p.get("upc") for p in valid_products if not p.get("error")}
     missing = [upc for upc in upc_list if upc not in priced]
 
     if not missing:
@@ -73,11 +89,15 @@ def main():
     return False
 
 def sync_cpi():
-    # Fetch CPI data from BLS API
-    series_id = "CUUR0000SAF11"  # Example series ID for All Items CPI
+    """Refresh the national CPI reference series.
+
+    Fetches three calendar years, not two: BLS publishes a month or two in
+    arrears, so early in a new year a two-year window can end before the
+    prior-year month the dashboard's YoY figure needs.
+    """
     try:
         end = datetime.now().year
-        payload = fetch_series(series_id, end-1, end)
+        payload = fetch_series(CPI_SERIES, end - 2, end)
         rows = parse_series(payload)
         upsert_cpi(rows)
         print("CPI data synchronized successfully.")

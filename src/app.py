@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 import altair as alt
 
 from transform import yoy
+from config import CPI_SERIES, CPI_SERIES_LABEL
 
 load_dotenv()
 
@@ -25,10 +26,9 @@ COLORS = {"regular": REGULAR, "sale": SALE}
 NATIONAL = "#6b6a66"
 AXIS = "#898781"
 
-# BLS "food at home", US city average — the closest national analogue to a
-# grocery basket. Monthly, and published with a lag of a month or two.
-CPI_SERIES = "CUUR0000SAF11"
-CPI_SERIES_LABEL = "US food-at-home CPI"
+# CPI_SERIES / CPI_SERIES_LABEL come from config.py — the pipeline loads that
+# same series, and a second copy here could drift into labelling one series
+# while the chart shows another.
 
 
 # ---------------------------------------------------------------- data
@@ -76,14 +76,28 @@ def load_cpi(series_id=CPI_SERIES):
 
 
 # ---------------------------------------------------------------- charts
+def padded_domain(values, pad_fraction=0.25, minimum_pad=0.5):
+    """A y-domain that frames the data instead of the origin.
+
+    `scale=alt.Scale(zero=False)` alone does not survive `mark_area`: an area
+    implies a baseline at 0, so Vega-Lite pulls the domain back down and a
+    basket hovering near $79 gets drawn as a flat line against a $0–$90 axis —
+    exactly the movement the chart exists to show.
+    """
+    low, high = float(values.min()), float(values.max())
+    pad = max((high - low) * pad_fraction, minimum_pad)
+    return [low - pad, high + pad]
+
+
 def basket_chart(basket):
+    domain = padded_domain(basket["basket_price"])
     base = alt.Chart(basket).encode(
         x=alt.X("day:T", title=None, axis=alt.Axis(format="%b %d", tickCount=6)),
         y=alt.Y(
             "basket_price:Q",
             title="Basket total",
-            scale=alt.Scale(zero=False),
-            axis=alt.Axis(format="$,.0f"),
+            scale=alt.Scale(domain=domain, nice=False, clamp=True),
+            axis=alt.Axis(format="$,.2f"),
         ),
     )
     area = base.mark_area(
@@ -143,8 +157,11 @@ def mini_chart(series):
         .encode(
             x=alt.X("day:T", title=None,
                     axis=alt.Axis(format="%b %d", tickCount=3, labelAngle=0)),
+            # Cents, not whole dollars: most items move by less than $1 over the
+            # window, and rounding turned every tick into the same label
+            # ("$1 $1 $1"), which reads as an axis with no scale at all.
             y=alt.Y("price:Q", title=None, scale=alt.Scale(zero=False),
-                    axis=alt.Axis(format="$,.0f")),
+                    axis=alt.Axis(format="$,.2f", tickCount=3)),
             color=alt.Color(
                 "metric:N",
                 scale=alt.Scale(domain=list(COLORS), range=list(COLORS.values())),
@@ -170,8 +187,20 @@ def pct_change(series, col):
 
 
 # ---------------------------------------------------------------- header
+def format_stamp(ts):
+    """Render a snapshot time in the viewer's local zone.
+
+    Built without `%-I`: that padding flag is glibc-only and raises on Windows,
+    so the dashboard crashed on the very first line it rendered there.
+    """
+    if ts is None:
+        return "no data yet"
+    ts = ts.astimezone()  # recorded_at is TIMESTAMPTZ; show it as local time
+    return f"{ts:%b %d, %Y} · {ts.hour % 12 or 12}{ts:%p}"
+
+
 last_updated = load_last_updated()
-stamp = last_updated.strftime("%b %d, %Y · %-I%p") if last_updated else "no data yet"
+stamp = format_stamp(last_updated)
 
 st.title("🛒 mycpi")
 st.caption(
@@ -202,7 +231,7 @@ if not basket.empty:
         delta=(f"{since_start / first * 100:+.1f}%" if first else None),
         delta_color="inverse",
     )
-    k3.metric("Items tracked", f"{df['product_name'].nunique()}")
+    k3.metric("Items tracked", f"{df['product_name'].nunique() if not df.empty else 0}")
     k4.metric("Days of history", f"{basket['day'].nunique()}")
 
     cpi_latest, cpi_yoy = yoy(cpi, "value")
@@ -255,8 +284,13 @@ else:
     ranked.sort(key=lambda r: abs(r[3]) if r[3] is not None else -1, reverse=True)
 
     n_cols = 5
-    cols = st.columns(n_cols)
+    cols = None
     for i, (product, series, latest, pct) in enumerate(ranked):
+        # A fresh row of columns every n_cols cards. Reusing one set of columns
+        # stacks every card into the same five vertical strips, so cards drift
+        # out of alignment as soon as two labels wrap to different heights.
+        if i % n_cols == 0:
+            cols = st.columns(n_cols)
         with cols[i % n_cols]:
             with st.container(border=True):
                 label = product if len(product) <= 32 else product[:31] + "…"

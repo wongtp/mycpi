@@ -67,8 +67,9 @@ The hourly schedule fills the history; output is appended to `cron.log`. Idempot
 
 ## Tests
 
-Unit tests cover the pure pipeline stages (transform, validate) with no DB or
-network — the validate tests monkeypatch the last-price lookup. Run them with:
+Unit tests cover the pure pipeline stages (transform, validate, BLS parsing,
+watchlist loading) with no DB or network — the validate tests monkeypatch the
+last-price lookup. Run them with:
 
 ```bash
 pip install -r requirements-dev.txt
@@ -79,4 +80,10 @@ CI (`.github/workflows/ci.yml`) runs the suite on every push and PR to `main`.
 
 ## Schema migrations
 
-`init.sql` only runs against an *empty* Docker volume, so schema changes after the DB exists must be applied by hand against the live database (see `migrate_recorded_at_timestamptz.sql` for an example).
+`init.sql` only runs against an *empty* Docker volume, so schema changes after the DB exists must be applied by hand against the live database. Numbered scripts live in `migrations/`:
+
+```bash
+psql "$DATABASE_URL" -f migrations/002_index_excludes_bad_rows.sql
+```
+
+`init.sql` is kept in sync with them, so a fresh volume needs no migrations. Scripts that delete data say so in their header comment and are never required.
